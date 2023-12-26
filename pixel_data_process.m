@@ -120,7 +120,7 @@ end
 
 %%
 mean(Lab_t==0)
-mean(Lab_t==1)
+% mean(Lab_t==1)
 
 
 

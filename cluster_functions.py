@@ -117,6 +117,11 @@ def sample_muX2(p,T):
 
 def constraint(muX_a, C_a, delt_a, dynamics_a, Z_tmp, muX_pre = None):
     
+    ## I need to be careful about the label switching...
+    ## easy solutions...
+    ## 1) modify original labels, or (let's do this first...)
+    ## 2) modify the matching labels
+    
     # to debug...
     # muX_a = muX_fit[gg]
     # C_a = C_fit[gg,:,:]
@@ -762,145 +767,6 @@ def update_cluster(Z_a, numClus_a, t_a, actList_a,
         Z_b[ii] = c
         numClus_b[c] = numClus_b[c] + 1
     return Z_b, numClus_b, t_b, actList_b, c_next_b, muX_b, dynamics_b 
-
-#### Poisson version...
-def poiLogMar(y_poi, X_poi, offset_poi):
-    
-    # OK, I just do Laplace approximation here...
-    # to debug...
-    # y_nb = Y_tmp[ii,:].ravel()
-    # r_nb = r_tmp[ii]
-    # X_nb = muX_b[cc][1:,:].T
-    # offset_nb = muX_b[cc][0,:] + delta_tmp[ii,:]
-    
-    pois_res = sm.GLM(y_poi, X_poi, family=sm.families.Poisson(),
-                      offset = offset_poi).fit()
-    
-    logMar = pois_res.llf + np.sum(norm.logpdf(pois_res.params)) + 0.5*np.log(np.linalg.det(pois_res.cov_params()))
-    return logMar
-
-
-def update_cluster_poi(Z_a, numClus_a, t_a, actList_a,
-                       c_next_a,DPMM, alpha_random,
-                       a, log_v, logNb, muX_a, delta_tmp,
-                       Y_tmp, prior, alphaDP,sigma_alpha,t_max, dynamics_a, sample_tag):
-    
-    
-    # to debug...
-    # Z_a = Z_fit[gg-1,:].copy()
-    # numClus_a = numClus_fit[gg-1,:].copy()
-    # t_a = t_fit[gg-1].copy()
-    # actList_a = actList_fit[gg-1,:].copy()
-    # c_next_a = c_next
-    # muX_a = muX_fit[gg].copy()
-    # delta_tmp = delt_fit[gg,:].copy().reshape((-1, 1))
-    # Y_tmp = y
-    # dynamics_a = dynamics_fit[gg].copy()
-    
-    
-    N = Y_tmp.shape[0]
-    T = Y_tmp.shape[1]
-    p = muX_a[0].shape[0]-1
-    lAbsGam = lambda x: np.log(np.abs(gamma(x)))
-
-    Z_b = copy.deepcopy(Z_a)
-    numClus_b = copy.deepcopy(numClus_a)
-    t_b = copy.deepcopy(t_a)
-    actList_b = copy.deepcopy(actList_a)
-    muX_b = copy.deepcopy(muX_a)
-    c_next_b = c_next_a
-    dynamics_b = copy.deepcopy(dynamics_a)
-    
-    if DPMM and alpha_random:
-        # MH move for DP concentration parameter (using p_alpha(a) = exp(-a) = Exp(a|1))
-        aprop = alphaDP*np.exp(np.random.uniform()*sigma_alpha)
-        top = t_a*np.log(aprop) - lAbsGam(aprop+N) + lAbsGam(aprop) - aprop + np.log(aprop)
-        bot = t_a*np.log(alphaDP) - lAbsGam(alphaDP+N) + lAbsGam(alphaDP) - alphaDP + np.log(alphaDP)
-        if np.random.uniform() < min(1, np.exp(top-bot)):
-            alphaDP = aprop
-        log_v = np.arange(1, t_max+2)*np.log(alphaDP) - lAbsGam(alphaDP+N) + lAbsGam(alphaDP)
-    
-    for ii in range(N):
-        
-        # (a) remove point ii from its cluster
-        c = Z_b[ii].copy()
-        numClus_b[c] = numClus_b[c] - 1
-        if numClus_b[c] > 0:
-            c_prop = c_next_b
-            if sample_tag == 1:
-                muX_b[c_prop] = sample_muX(p, T)
-            else:
-                 muX_b[c_prop] = sample_muX2(p, T)
-            # muX_b[c_prop] = jitters_muX(muX_b[c])
-            
-            ## for debugging...
-            # muX_b[c_prop] = muX_all[0]
-            
-            
-            ## to be safe...
-            # while len(muX_b) <= c_prop:
-            #     muX_b.append([])
-            # muX_b[c_prop] = sample_muX(p, T)
-            
-        else:
-            c_prop = c
-            actList_b = ordered_remove(c, actList_b, t_b)
-            t_b = t_b - 1
-        
-        # (b) compute probabilities for resampling
-        log_p = np.zeros((t_b+1,))
-        for j in range(t_b):
-            cc = actList_b[j]
-            # calculate the marginalized likelihood...
-            try:
-                
-                logMar = poiLogMar(Y_tmp[ii,:].ravel(), muX_b[cc][1:,:].T,
-                                   muX_b[cc][0,:] + delta_tmp[ii,:])
-                
-                
-            except:
-                logMar = -np.Inf
-            
-            log_p[j] = logNb[numClus_b[cc]-1] + logMar
-        
-        
-        try:
-            logMar = poiLogMar(Y_tmp[ii,:].ravel(), muX_b[c_prop][1:,:].T,
-                               muX_b[c_prop][0,:] + delta_tmp[ii,:])
-                
-        except:
-            logMar = -np.Inf
-        log_p[t_b] = log_v[t_b] - log_v[t_b-1] + np.log(a) + logMar
-        
-        # (c) sample a new cluster for it
-        j = randlogp(log_p, t_b+1)
-    
-        # (d) add point i to its new clusters
-        if (j+1) <= t_b:
-            c = actList_b[j]
-        else:
-            c = c_prop
-            idx_tmp = np.arange(c*(p+1), (c+1)*(p+1))
-            for ss in range(dynamics_b['As'].shape[0]):
-                dynamics_b['bs'][ss,idx_tmp] = np.zeros((p+1,))
-                dynamics_b['As'][ss,idx_tmp,:] = 0
-                dynamics_b['As'][ss,:,idx_tmp] = 0
-                dynamics_b['As'][ss,idx_tmp,idx_tmp] = 1
-                dynamics_b['Qs'][ss,idx_tmp,:] = 0
-                dynamics_b['Qs'][ss,:,idx_tmp] = 0
-                dynamics_b['Qs'][ss,idx_tmp,idx_tmp] = 1e-2
-            
-            actList_b = ordered_insert(c, actList_b, t_b)
-            t_b = t_b + 1
-            c_next_b = ordered_next(actList_b)
-        
-        Z_b[ii] = c
-        numClus_b[c] = numClus_b[c] + 1
-    return Z_b, numClus_b, t_b, actList_b, c_next_b, muX_b, dynamics_b 
-
-
-
-
 
 #### split-and-merge
 
